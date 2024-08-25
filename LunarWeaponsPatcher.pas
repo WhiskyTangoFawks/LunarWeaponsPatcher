@@ -6,6 +6,9 @@ uses 'wtfLib\wtfLib_COBJ';
 
 const	
   log = true;
+    //Logging
+  log_level = 3; //1=trace, 2=debug, 3=info, 4=warn, 5=error
+  disableNonStandardRecievers = true;
     
 var
   masterFiles: array[0..5] of IInterface;
@@ -80,7 +83,15 @@ begin
   //Iterate Records
   for i := MaxRecordIndex downto 0 do begin
     e := GetRecord(i);
-      if Signature(e) = 'COBJ' then begin
+      if ContainsText(editorID(e), 'Binoculars') then removeRecord(i)
+      else if ContainsText(editorID(e), 'Camera') then removeRecord(i)
+      else if ContainsText(editorID(e), 'LeaderCard') then removeRecord(i)
+      else if ContainsText(editorID(e), '2x2') then removeRecord(i)
+      else if ContainsText(editorID(e), 'HQRoom') then removeRecord(i)
+      else if ContainsText(editorID(e), 'SS2_Skin') then removeRecord(i)
+      else if ContainsText(editorID(e), 'Plan') then removeRecord(i)
+      else if ContainsText(editorID(e), '[SS2') then removeRecord(i)
+      else if Signature(e) = 'COBJ' then begin
         cnam := LinksTo(ElementBySignature(e, 'CNAM'));
         ap := getElementEditValues(cnam, 'DATA\Attach Point');
         misc := getElementEditValues(cnam, 'LNAM');
@@ -98,8 +109,12 @@ begin
         else if containsText(ap, 'ap_DLC01Bot') then RemoveRecord(i)
         else if containsText(ap, 'ma_Template') then RemoveRecord(i);
       end
-      else if Signature(e) = 'OMOD' then 
+      else if Signature(e) = 'OMOD' then begin
         if not isModcol(e) then RemoveRecord(i);
+      end
+      else if Signature(e) = 'WEAP' then begin
+        if getElementEditValues(e, 'DNAM\AMMO') = '' then removeRecord(i);
+      end;
         
   end;
   
@@ -112,8 +127,13 @@ begin
   for i := 0 to MaxPatchRecordIndex do begin
     e := GetPatchRecord(i);
     if (Signature(e) = 'OMOD') then 
-        if isModcol(e) then ProcessModcol(e)
-        else ProcessOmod(e);
+        if isModcol(e) then ProcessModcol(e);
+  end;
+
+    for i := 0 to MaxPatchRecordIndex do begin
+    e := GetPatchRecord(i);
+    if (Signature(e) = 'OMOD') then 
+        if not isModcol(e) then ProcessOmod(e);
   end;
 
   //Process the COBJs
@@ -151,7 +171,7 @@ var
 	 
 begin
 
-    if log then addMessage('-------------------------------Patching COBJ ' + getElementEditValues(cobj, 'EDID') + '-------------------------------');
+    if log then addMessage('-------------------------------Patching COBJ ' + getElementEditValues(cobj, 'EDID') + ', ' + IntToHex(GetLoadOrderFormID(cobj), 8) + ' -------------------------------');
 
     //getRankFromExisting condition
     level := getHighCondition(cobj); //decremented because lists have perk level 1 at index 0
@@ -161,6 +181,9 @@ begin
     //only need to copy omod for receivers
     omod := winningOverride(LinksTo(ElementBySignature(cobj, 'CNAM')));
     omod := wbCopyElementToFile(omod, mxPatchFile, false, true);
+
+    addMEssage('Found weap' + editorID(getTargetWeaponForOMOD(omod)));
+    if hasKeyword(getTargetWeaponForOMOD(omod), 'WeaponTypeBallistic') then addMEssage('Found keyword WeaponTypeBallistic');
 
     //always copy misc
     misc := winningOverride(LinksTo(ElementBySignature(omod, 'LNAM')));
@@ -177,10 +200,17 @@ begin
     
     omodName := getElementEditValues(omod, 'FULL');
     miscName := getElementEditValues(misc, 'FULL');
+
+    if containsText(EditorID(omod), 'disable') then begin 
+      AddMEssage('Disable found in EDID - Disabling OMOD');
+      removeElement(cobj, 'CNAM');
+      disableOMOD(omod);
+      setElementEditValues(cobj, 'EDID', '_disabled_'+EditorID(cobj));
+      exit;
+    end;
    
     if ap = 'ap_gun_receiver' then begin
-      
-      if hasKeyword(getTargetWeaponForOMOD(omod), 'WeaponTypeBallistic') then 
+       if hasKeyword(getTargetWeaponForOMOD(omod), 'WeaponTypeBallistic') then 
         if isNonStandardReceiver(omod) then begin
           removeElement(cobj, 'CNAM');
           setElementEditValues(cobj, 'EDID', '_disabled_'+EditorID(cobj));
@@ -205,9 +235,14 @@ begin
         expectOmodPropertyValueTwoRange(omod, 'DamageTypeValues', '00060A81', damage, damage);
       end;
 
-      CreateTierFourReceivers(omod, misc, cobj);
+      if not ContainsText(EditorID(omod), 'Railway') 
+        AND not ContainsText(EditorID(omod), 'Critical')
+        AND not ContainsText(EditorID(omod), 'Junkjet')
+        AND not ContainsText(EditorID(omod), 'Flamer')
+        AND not ContainsText(EditorID(omod), 'COA_RR')
+        then CreateTierFourReceivers(omod, misc, cobj);
 
-       if hasKeyword(getTargetWeaponForOMOD(omod), 'WeaponTypeBallistic') then 
+      if hasKeyword(getTargetWeaponForOMOD(omod), 'WeaponTypeBallistic') then 
         perksToAssign.add(gunnut[getModifiedDamageLevel(omod)]) 
       else
         perksToAssign.add(science[getModifiedDamageLevel(omod)]);
@@ -348,7 +383,7 @@ begin
       assignNewConditions(cobj, perksToAssign);
     end
     else begin
-      AddMessage('Unrecognized attachment point');
+      AddMessage('Unrecognized attachment point: ' + ap);
       if not isRecordLunarPatched(cobj) then increasePerkReqs(cobj);
     end;
 
@@ -403,18 +438,20 @@ begin
 
       if ContainsText(ammo, '.38') then setElementEditValues(weap, 'DNAM\Damage - Base', Round(19 * factor))
       else if ContainsText(ammo, 'shotgun') then setElementEditValues(weap, 'DNAM\Damage - Base', Round(62 * factor))
-      else if ContainsText(ammo, '10mm') then setElementEditValues(weap, 'DNAM\Damage - Base', 27 * factor)
-      else if ContainsText(ammo, '.45') then setElementEditValues(weap, 'DNAM\Damage - Base', 40 * factor)
-      else if ContainsText(ammo, '.44') then setElementEditValues(weap, 'DNAM\Damage - Base', 70 * factor)
-      else if ContainsText(ammo, '.50') then setElementEditValues(weap, 'DNAM\Damage - Base', 160 * factor)
-      else if ContainsText(ammo, '5mm') then setElementEditValues(weap, 'DNAM\Damage - Base', 15 * factor)
-      else if ContainsText(ammo, '5.56') then setElementEditValues(weap, 'DNAM\Damage - Base', 52 * factor)
-      else if ContainsText(ammo, '7.62') then setElementEditValues(weap, 'DNAM\Damage - Base', 52 * factor)
-      else if ContainsText(ammo, '2mm') then setElementEditValues(weap, 'DNAM\Damage - Base', 180 * factor)
+      else if ContainsText(ammo, '10mm') then setElementEditValues(weap, 'DNAM\Damage - Base', Round(27 * factor))
+      else if ContainsText(ammo, '-70') then setElementEditValues(weap, 'DNAM\Damage - Base', Round(80 * factor))
+      else if ContainsText(ammo, '.45') then setElementEditValues(weap, 'DNAM\Damage - Base', Round(40 * factor))
+      else if ContainsText(ammo, '.44') then setElementEditValues(weap, 'DNAM\Damage - Base', Round(70 * factor))
+      else if ContainsText(ammo, '.50') then setElementEditValues(weap, 'DNAM\Damage - Base', Round(160 * factor))
+      else if ContainsText(ammo, '5mm') then setElementEditValues(weap, 'DNAM\Damage - Base', Round(15 * factor))
+      else if ContainsText(ammo, '5.56') then setElementEditValues(weap, 'DNAM\Damage - Base', Round(52 * factor))
+      else if ContainsText(ammo, '7.62') then setElementEditValues(weap, 'DNAM\Damage - Base', Round(52 * factor))
+      else if ContainsText(ammo, '2mm') then setElementEditValues(weap, 'DNAM\Damage - Base', Round(180 * factor))
+      else if ContainsText(ammo, '308') then setElementEditValues(weap, 'DNAM\Damage - Base', Round(64 * factor))
       else if ContainsText(ammo, 'fusion') then setElementEditValues(ElementByIndex(ElementByPath(weap, 'DAMA - Damage Types'), 0), 'Amount', Round(32 * factor))
       else if ContainsText(ammo, 'plasma') then begin
         setElementEditValues(ElementByIndex(ElementByPath(weap, 'DAMA - Damage Types'), 0), 'Amount', Round(40 * factor));
-        setElementEditValues(weap, 'DNAM\Damage - Base', 25 * factor);
+        setElementEditValues(weap, 'DNAM\Damage - Base', Round(25 * factor));
       end
       else addMessage('**WARNING** Weapon damage needs to be adjusted manually');
       
@@ -484,21 +521,29 @@ var
   fname: String;
 
 begin
+  if omodHasKeyword(omod, 'dn_HasReceiver_ArmorPiercing1') 
+  or omodHasKeyword(omod, 'dn_HasReceiver_ArmorPiercing2') 
+  or omodHasKeyword(omod, 'dn_HasReceiver_BetterCriticals1') 
+  or omodHasKeyword(omod, 'dn_HasReceiver_BetterCriticals2')
+  or containsText(EditorID(omod), 'ArmorPiercing') 
+  or containsText(EditorID(omod), 'BetterCrit')
+  then exit;
   
+
   if omodHasKeyword(omod, 'dn_HasReceiver_Automatic') then begin
     addMessage('Found automatic receiver');
-    if omodHasKeyword(omod, 'dn_HasReceiver_MoreDamage2') then begin
-      addMessage('Found automatic receiver MoreDamage2');
-      if not Assigned(getUpgrade(omod)) then begin
-          addMessage('Auto MoreDamage3 missing');
+    if not (omodHasKeyword(omod, 'dn_HasReceiver_MoreDamage3') or containsText(EditorID(omod), 'MoreDamage3')) then begin
+      addMessage('Found automatic receiver');
+      if not Assigned(getDamageOffsetOmod(omod, 1)) then begin
+          addMessage('Missing automatic receiver upgrade');
           processCobj(createUpgrade(omod, misc, cobj))
       end;
     end;
   end
-  else if omodHasKeyword(omod, 'dn_HasReceiver_MoreDamage3') then begin
+  else if not (omodHasKeyword(omod, 'dn_HasReceiver_MoreDamage4') or containsText(EditorID(omod), 'MoreDamage4')) then begin
     addMessage('Found non-automatic receiver');
-    if not Assigned(getUpgrade(omod)) then begin
-      addMessage('MoreDamage4 missing');
+    if not Assigned(getDamageOffsetOmod(omod, 1)) then begin
+      addMessage('Non-Automatic receiver upgrade missing missing');
       processCobj(createUpgrade(omod, misc, cobj));
     end;
   end;
